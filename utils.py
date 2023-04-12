@@ -230,6 +230,8 @@ def get_shap_background_and_test(dataset, num_background=700, num_inputs_per_cla
 
 
 def plot_shap(shap_values, test_inputs, save_path, name='test'):
+    print(test_inputs.min(), test_inputs.max())
+    print([(el.min(), el.max()) for el in shap_values])
     if len(shap_values[0].shape) != 4:
         # not an image
         shap_numpy = [s.numpy()[..., np.newaxis] for s in shap_values]

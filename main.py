@@ -17,7 +17,7 @@ from captum.attr import GradientShap
 
 
 def main(args):
-    exp_name = f"{args['strategy']}_{args['dataset']}"
+    exp_name = f"{args['strategy']}_{args['dataset']}" if not args["test"] else "test"
     folder_path = os.path.join(args['experiment_folder'], exp_name)
     os.makedirs(folder_path, exist_ok=True)
     with open(os.path.join(folder_path, 'args.json'), 'w') as f:
@@ -64,7 +64,7 @@ def main(args):
         optimizer = SGD(model.parameters(), lr=args['lr'])
     elif args['dataset'] == 'speech':
         benchmark = create_speech_benchmark(num_words=10, test_split=0.2)
-        model = SequenceClassifier(input_size=40, hidden_size=256, rnn_layers=1, batch_first=True)
+        model = SequenceClassifier(input_size=40, hidden_size=256, rnn_layers=2, batch_first=True)
         optimizer = Adam(model.parameters(), lr=args['lr'])
     else:
         raise ValueError("Unrecognized dataset name")
@@ -137,8 +137,7 @@ def main(args):
 
         torch.save([explanations, shap_test], os.path.join(folder_path, f'explanations_and_examples_{i}.pt'))
         torch.save(model.state_dict(), os.path.join(folder_path, f'model{i}.pt'))
-        if args['dataset'] != 'speech':
-            plot_shap(explanations, shap_test, folder_path, name=f'{args["strategy"]}_{args["dataset"]}_{i}')
+        plot_shap(explanations, shap_test, folder_path, name=f'{args["strategy"]}_{args["dataset"]}_{i}')
 
     with open(os.path.join(folder_path, 'metrics.pickle'), 'wb') as f:
         pickle.dump(results, f)
@@ -156,6 +155,7 @@ if __name__ == "__main__":
     parser.add_argument('--experiment_folder', type=str, default='/disk3/a.cossu/explainable-continual-learning/results')
     parser.add_argument('--strategy', type=str, default='naive')
     parser.add_argument('--dataset', type=str, default='mnist')
+    parser.add_argument('--test', action="store_true")
     args = vars(parser.parse_args())
     res = main(args)
     print(res)

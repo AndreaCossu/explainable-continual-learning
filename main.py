@@ -1,16 +1,19 @@
+import argparse
 import torch
 import os
 import torchvision.transforms as transforms
 import pickle
-from torch.optim import SGD
+from torch.optim import SGD, Adam
 
 from avalanche.benchmarks.classic import SplitCIFAR10, SplitMNIST
 from avalanche.evaluation.metrics import accuracy_metrics, loss_metrics
 from avalanche.logging import InteractiveLogger
 from avalanche.training.plugins import EvaluationPlugin
 from avalanche.training.supervised import Naive, Replay
-from utils import compute_shap, plot_shap, IncrementalMLP, get_shap_background_and_test, ReducedResNet18
+from utils import plot_shap, IncrementalMLP, get_shap_background_and_test, \
+    ReducedResNet18, SequenceClassifier, create_speech_benchmark
 import json
+from captum.attr import GradientShap
 
 
 def main(args):
@@ -23,6 +26,7 @@ def main(args):
     device = torch.device(
         f"cuda:{args['cuda']}" if torch.cuda.is_available() and args['cuda'] >= 0 else "cpu"
     )
+
     if args['dataset'] == 'cifar':
         train_transform = transforms.Compose(
             [
@@ -49,22 +53,23 @@ def main(args):
             shuffle=True,
             class_ids_from_zero_in_each_exp=False,
         )
-        # model = SlimResNet18(nclasses=10)
         model = ReducedResNet18()
-        # model = resnet18()
+        optimizer = SGD(model.parameters(), lr=args['lr'], momentum=0.9)
     elif args['dataset'] == 'mnist':
         benchmark = SplitMNIST(5, return_task_id=False,
                                fixed_class_order=list(range(10)),
                                shuffle=True,
                                class_ids_from_zero_in_each_exp=False)
         model = IncrementalMLP(num_classes=10, input_size=28*28, hidden_size=256, hidden_layers=1)
+        optimizer = SGD(model.parameters(), lr=args['lr'])
+    elif args['dataset'] == 'speech':
+        benchmark = create_speech_benchmark(num_words=10, test_split=0.2)
+        model = SequenceClassifier(input_size=40, hidden_size=256, rnn_layers=1, batch_first=True)
+        optimizer = Adam(model.parameters(), lr=args['lr'])
     else:
         raise ValueError("Unrecognized dataset name")
 
-    if args['dataset'] == 'cifar':
-        optimizer = SGD(model.parameters(), lr=args['lr'], momentum=0.9)
-    else:
-        optimizer = SGD(model.parameters(), lr=args['lr'])
+    shap = GradientShap(model)
     interactive_logger = InteractiveLogger()
     loggers = [interactive_logger]
     training_metrics = []
@@ -105,10 +110,12 @@ def main(args):
 
     results = []
 
-    shap_background, shap_test = get_shap_background_and_test(dataset=benchmark.test_stream[0].dataset,
-                                                              num_background=args['num_background'],
-                                                              num_inputs_per_class=args['num_test_per_class'],
-                                                              classes=[0, 1])
+    shap_background, shap_test, shap_test_targets = get_shap_background_and_test(
+        dataset=benchmark.test_stream[0].dataset,
+        num_background=args['num_background'],
+        num_inputs_per_class=args['num_test_per_class'],
+        classes=[0, 1])
+
     for i, experience in enumerate(benchmark.train_stream):
         cl_strategy.train(
             experience,
@@ -116,12 +123,22 @@ def main(args):
             drop_last=True,
         )
         results.append(cl_strategy.eval(benchmark.test_stream))
+
+        classes_so_far = set()
+        for e in range(i+1):
+            classes_so_far = classes_so_far.union(set(benchmark.classes_in_experience['train'][e]))
+
         # explanations is a list of (n_classes) elements. Each element is a numpy array of shape (num_test, input_shape),
-        # where input_shape is (1, 28, 28) for MNIST or (3, 32, 32) for CIFAR10/100.
-        explanations, inputs = compute_shap(model, shap_background, shap_test, device)
-        torch.save([explanations, inputs], os.path.join(folder_path, f'explanations_and_examples_{i}.pt'))
+        # where input_shape is (1, 28, 28) for MNIST, (3, 32, 32) for CIFAR10, (101, 40) for Speech.
+        explanations = []
+        for c in classes_so_far:
+            expl = shap.attribute(shap_test.to(device), shap_background.to(device), target=c)
+            explanations.append(expl.cpu())
+
+        torch.save([explanations, shap_test], os.path.join(folder_path, f'explanations_and_examples_{i}.pt'))
         torch.save(model.state_dict(), os.path.join(folder_path, f'model{i}.pt'))
-        plot_shap(explanations, inputs, folder_path, name=f'{args["strategy"]}_{args["dataset"]}_{i}')
+        if args['dataset'] != 'speech':
+            plot_shap(explanations, shap_test, folder_path, name=f'{args["strategy"]}_{args["dataset"]}_{i}')
 
     with open(os.path.join(folder_path, 'metrics.pickle'), 'wb') as f:
         pickle.dump(results, f)
@@ -129,31 +146,16 @@ def main(args):
 
 
 if __name__ == "__main__":
-    # for d in ['mnist', 'cifar']:
-    #     for s in ['naive', 'replay']:
-    #         args = {
-    #             "cuda": 0,
-    #             "lr": 0.001,
-    #             "epochs": 10,
-    #             "train_mb_size": 64,
-    #             "num_background": 700,
-    #             "num_test_per_class": 3,
-    #             "experiment_folder": "/disk3/a.cossu/explainable-continual-learning/results",
-    #             "strategy": s,
-    #             "dataset": d
-    #         }
-    #         res = main(args)
-    #         print(res)
-    args = {
-        "cuda": 0,
-        "lr": 0.001,
-        "epochs": 10,
-        "train_mb_size": 64,
-        "num_background": 700,
-        "num_test_per_class": 3,
-        "experiment_folder": "/disk3/a.cossu/explainable-continual-learning/results",
-        "strategy": "naive",
-        "dataset": "cifar"
-    }
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--cuda', type=int, default=0)
+    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--epochs', type=int, default=10)
+    parser.add_argument('--train_mb_size', type=int, default=64)
+    parser.add_argument('--num_background', type=int, default=700)
+    parser.add_argument('--num_test_per_class', type=int, default=3)
+    parser.add_argument('--experiment_folder', type=str, default='/disk3/a.cossu/explainable-continual-learning/results')
+    parser.add_argument('--strategy', type=str, default='naive')
+    parser.add_argument('--dataset', type=str, default='mnist')
+    args = vars(parser.parse_args())
     res = main(args)
     print(res)

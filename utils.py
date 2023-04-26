@@ -3,12 +3,126 @@ import os
 import torch
 import numpy as np
 import shap
+import captum
 from torch.utils.data import DataLoader, TensorDataset
 from torch import nn, relu
 from torch.nn.functional import avg_pool2d
 from avalanche.models import IncrementalClassifier
 from avalanche.benchmarks import dataset_benchmark
 from avalanche.benchmarks.utils import make_classification_dataset
+from matplotlib.colors import LinearSegmentedColormap
+from avalanche.training.plugins import GSS_greedyPlugin
+
+
+class MyGSS(GSS_greedyPlugin):
+    def after_forward(self, strategy, num_workers=0, shuffle=True, **kwargs):
+        """
+        After every forward this function select sample to fill
+        the memory buffer based on cosine similarity
+        """
+        if not strategy.rnn:
+            strategy.model.eval()
+
+        # Compute the gradient dimension
+        grad_dims = []
+        for param in strategy.model.parameters():
+            grad_dims.append(param.data.numel())
+
+        place_left = (
+            self.ext_mem_list_x.size(0) - self.ext_mem_list_current_index
+        )
+        if place_left <= 0:  # buffer full
+
+            batch_sim, mem_grads = self.get_batch_sim(
+                strategy,
+                grad_dims,
+                batch_x=strategy.mb_x,
+                batch_y=strategy.mb_y,
+            )
+
+            if batch_sim < 0:
+                buffer_score = self.buffer_score[
+                    : self.ext_mem_list_current_index
+                ].cpu()
+
+                buffer_sim = (buffer_score - torch.min(buffer_score)) / (
+                    (torch.max(buffer_score) - torch.min(buffer_score)) + 0.01
+                )
+
+                # draw candidates for replacement from the buffer
+                index = torch.multinomial(
+                    buffer_sim, strategy.mb_x.size(0), replacement=False
+                ).to(strategy.device)
+
+                # estimate the similarity of each sample in the received batch
+                # to the randomly drawn samples from the buffer.
+                batch_item_sim = self.get_each_batch_sample_sim(
+                    strategy, grad_dims, mem_grads, strategy.mb_x, strategy.mb_y
+                )
+
+                # normalize to [0,1]
+                scaled_batch_item_sim = ((batch_item_sim + 1) / 2).unsqueeze(1)
+                buffer_repl_batch_sim = (
+                    (self.buffer_score[index] + 1) / 2
+                ).unsqueeze(1)
+                # draw an event to decide on replacement decision
+                outcome = torch.multinomial(
+                    torch.cat(
+                        (scaled_batch_item_sim, buffer_repl_batch_sim), dim=1
+                    ),
+                    1,
+                    replacement=False,
+                )
+                # replace samples with outcome =1
+                added_indx = torch.arange(
+                    end=batch_item_sim.size(0), device=strategy.device
+                )
+                sub_index = outcome.squeeze(1).bool()
+                self.ext_mem_list_x[index[sub_index]] = strategy.mb_x[
+                    added_indx[sub_index]
+                ].clone()
+                self.ext_mem_list_y[index[sub_index]] = strategy.mb_y[
+                    added_indx[sub_index]
+                ].clone()
+                self.buffer_score[index[sub_index]] = batch_item_sim[
+                    added_indx[sub_index]
+                ].clone()
+        else:
+            offset = min(place_left, strategy.mb_x.size(0))
+            updated_mb_x = strategy.mb_x[:offset]
+            updated_mb_y = strategy.mb_y[:offset]
+
+            # first buffer insertion
+            if self.ext_mem_list_current_index == 0:
+                batch_sample_memory_cos = (
+                    torch.zeros(updated_mb_x.size(0)) + 0.1
+                )
+            else:
+                # draw random samples from buffer
+                mem_grads = self.get_rand_mem_grads(
+                    strategy=strategy,
+                    grad_dims=grad_dims,
+                    gss_batch_size=len(strategy.mb_x),
+                )
+
+                # estimate a score for each added sample
+                batch_sample_memory_cos = self.get_each_batch_sample_sim(
+                    strategy, grad_dims, mem_grads, updated_mb_x, updated_mb_y
+                )
+
+            curr_idx = self.ext_mem_list_current_index
+            self.ext_mem_list_x[curr_idx : curr_idx + offset].data.copy_(
+                updated_mb_x
+            )
+            self.ext_mem_list_y[curr_idx : curr_idx + offset].data.copy_(
+                updated_mb_y
+            )
+            self.buffer_score[curr_idx : curr_idx + offset].data.copy_(
+                batch_sample_memory_cos
+            )
+            self.ext_mem_list_current_index += offset
+
+        strategy.model.train()
 
 def conv3x3(in_planes, out_planes, stride=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=True)
@@ -77,14 +191,33 @@ class ReducedResNet18(nn.Module):
     As from GEM paper, a smaller version of ResNet18, with three times less feature maps across all layers.
     It employs multi-head output layer.
     """
-    def __init__(self, size_before_classifier=160):
+    def __init__(self, size_before_classifier=160, initial_out_features=2):
         super().__init__()
         self.resnet = ResNet(BasicBlock, [2, 2, 2, 2], 20)
-        self.classifier = IncrementalClassifier(in_features=size_before_classifier, initial_out_features=2)
+        self.classifier = IncrementalClassifier(in_features=size_before_classifier, initial_out_features=initial_out_features)
     def forward(self, x):
         out = self.resnet(x)
         out = out.view(out.size(0), -1)
         return self.classifier(out)
+
+
+class CNN1D(nn.Module):
+    def __init__(self, initial_out_features=2):
+        super().__init__()
+        self.layers = nn.Sequential(
+            nn.Conv2d(1, 32, 3),
+            nn.MaxPool2d(kernel_size=3),
+            nn.Dropout(0.25),
+            nn.Conv2d(32, 64, 3),
+            nn.MaxPool2d(kernel_size=3),
+            nn.Flatten(),
+            IncrementalClassifier(1920, initial_out_features=initial_out_features)
+        )
+
+    def forward(self, x):
+        x = x.unsqueeze(1)
+        out = self.layers(x)
+        return out
 
 
 class IncrementalMLP(nn.Module):
@@ -95,14 +228,8 @@ class IncrementalMLP(nn.Module):
         hidden_size=512,
         hidden_layers=1,
         drop_rate=0.5,
+        initial_out_features=2
     ):
-        """
-        :param num_classes: output size
-        :param input_size: input size
-        :param hidden_size: hidden layer size
-        :param hidden_layers: number of hidden layers
-        :param drop_rate: dropout rate. 0 to disable
-        """
         super().__init__()
 
         layers = nn.Sequential(
@@ -125,7 +252,7 @@ class IncrementalMLP(nn.Module):
             )
 
         self.features = nn.Sequential(*layers)
-        self.classifier = IncrementalClassifier(in_features=hidden_size, initial_out_features=2)
+        self.classifier = IncrementalClassifier(in_features=hidden_size, initial_out_features=initial_out_features)
         self._input_size = input_size
 
     def forward(self, x):
@@ -144,7 +271,7 @@ class IncrementalMLP(nn.Module):
 
 class SequenceClassifier(torch.nn.Module):
     def __init__(
-        self, input_size, hidden_size, rnn_layers=1, batch_first=True
+        self, input_size, hidden_size, rnn_layers=1, batch_first=True, initial_out_features=2
     ):
         super().__init__()
         self.batch_first = batch_first
@@ -154,7 +281,7 @@ class SequenceClassifier(torch.nn.Module):
             num_layers=rnn_layers,
             batch_first=batch_first,
         )
-        self.classifier = IncrementalClassifier(in_features=hidden_size, initial_out_features=2)
+        self.classifier = IncrementalClassifier(in_features=hidden_size, initial_out_features=initial_out_features)
 
 
     def forward(self, x):
@@ -174,7 +301,11 @@ def create_speech_benchmark(num_words=10, test_split=0.2):
     for i in range(len(all_tensors)):
         train_len = int(all_tensors[i].shape[0] * (1-test_split))
         train_tensor = all_tensors[i][:train_len]
+        mean = train_tensor.view(-1, train_tensor.shape[-1]).mean(dim=0)
+        std = train_tensor.view(-1, train_tensor.shape[-1]).std(dim=0)
+        train_tensor = (train_tensor - mean) / std
         test_tensor = all_tensors[i][train_len:]
+        test_tensor = (test_tensor - mean) / std
         tensors.append({'train': train_tensor, 'test': test_tensor})
 
     datasets = {'train': [], 'test': []}
@@ -192,7 +323,7 @@ def create_speech_benchmark(num_words=10, test_split=0.2):
 
     return benchmark
 
-def get_shap_background_and_test(dataset, num_background=700, num_inputs_per_class=3, classes=[0, 1],
+def get_shap_background_and_test(dataset, num_background=700, num_inputs_per_class=3, classes=(0, 1),
                                  collate_fn=None):
     batch_size = num_background + num_inputs_per_class*len(classes)
     test_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
@@ -229,19 +360,66 @@ def get_shap_background_and_test(dataset, num_background=700, num_inputs_per_cla
     return background_inputs, test_inputs, test_targets
 
 
-def plot_shap(shap_values, test_inputs, save_path, name='test'):
-    print(test_inputs.min(), test_inputs.max())
-    print([(el.min(), el.max()) for el in shap_values])
+def plot_shap_grid(shap_values, test_inputs, save_path, name='test', num_plots=6):
+    per_class_els = int(num_plots / 2)
+    test_inputs = torch.cat((test_inputs[:per_class_els], test_inputs[-per_class_els:]))
+    shap_values = [torch.cat((s[:per_class_els], s[-per_class_els:])) for s in shap_values]
     if len(shap_values[0].shape) != 4:
-        # not an image
+        # plot spectrogram as image
         shap_numpy = [s.numpy()[..., np.newaxis] for s in shap_values]
         test_numpy = test_inputs.numpy()[..., np.newaxis]
         shap.image_plot(shap_numpy, -test_numpy)
         plt.savefig(os.path.join(save_path, f'{name}.png'))
+
+        # plot time series averaged over features and weighted by shap
+        shap_numpy = [s.squeeze(-1).mean(axis=-1) for s in shap_numpy]
+        test_numpy = test_inputs.numpy().mean(axis=-1)
+        fig, ax = plt.subplots(test_numpy.shape[0], len(shap_numpy)+1, figsize=(20, 5))
+        for i in range(test_numpy.shape[0]):
+            ax[i, 0].plot(test_numpy[i], 'g-')
+            ax[i, 0].set_ylim(-1, 3)
+        default_cmap = plt.get_cmap('Greys')
+        for i in range(test_numpy.shape[0]):
+            for j in range(len(shap_numpy)):
+                shap_numpy_norm = (shap_numpy[j][i] - shap_numpy[j][i].min()) / (shap_numpy[j][i].max() - shap_numpy[j][i].min())
+                ax[i, j+1].plot(np.arange(test_numpy.shape[1]), test_numpy[i], c='white')
+                for k in range(test_numpy[i].shape[0]):
+                    ax[i, j+1].plot([k], test_numpy[i][k],
+                                  linewidth=0., marker='o',
+                                  c=default_cmap(shap_numpy_norm[k]),
+                                  markersize=0.5)
+                ax[i, j+1].set_ylim(-1, 3)
+        plt.savefig(os.path.join(save_path, f'{name}_timeseries.png'))
     else:
+        # plot average over channels
+        if len(shap_values[0].squeeze().shape) == 4:
+            shap_numpy = [np.swapaxes(np.swapaxes(s.sum(axis=1).numpy()[:, np.newaxis, ...], 1, -1), 1, 2) for s in shap_values]
+            shap_numpy = [torch.relu(torch.from_numpy(s)) for s in shap_numpy]
+            test_numpy = np.swapaxes(np.swapaxes(test_inputs.numpy().sum(axis=1)[:, np.newaxis, ...], 1, -1), 1, 2)
+            shap.image_plot(shap_numpy, -test_numpy)
+            plt.savefig(os.path.join(save_path, f'{name}_sum_channels.png'))
+
         # for each channel, print shap
         for c in range(test_inputs.shape[1]):
-            shap_numpy = [np.swapaxes(np.swapaxes(s[:, c, ...][:, np.newaxis, ...], 1, -1), 1, 2) for s in shap_values]
+            shap_numpy = [np.swapaxes(np.swapaxes(s.numpy()[:, c, ...][:, np.newaxis, ...], 1, -1), 1, 2) for s in shap_values]
             test_numpy = np.swapaxes(np.swapaxes(test_inputs.numpy()[:, c, ...][:, np.newaxis, ...], 1, -1), 1, 2)
+            shap_numpy = [torch.relu(torch.from_numpy(s)) for s in shap_numpy]
             shap.image_plot(shap_numpy, -test_numpy)
             plt.savefig(os.path.join(save_path, f'{name}_c{c}.png'))
+
+
+def plot_shap_single(explanations, shap_test, folder_path, name='single'):
+    default_cmap = LinearSegmentedColormap.from_list('custom blue',
+                                                     [(0, '#ffffff'),
+                                                      (0.25, '#000000'),
+                                                      (1, '#000000')], N=256)
+    for ex_id in range(explanations.shape[0]):
+        captum.attr.visualization.visualize_image_attr_multiple(
+            np.transpose(explanations[ex_id].cpu().detach().numpy(), (1, 2, 0)),
+            np.transpose(shap_test[ex_id].cpu().detach().numpy(), (1, 2, 0)),
+            ["original_image", "heat_map"],
+            ["all", "absolute_value"],
+            cmap=default_cmap,
+            show_colorbar=True,
+        )
+        plt.savefig(os.path.join(folder_path, f"{name}_ex{ex_id}.png"))

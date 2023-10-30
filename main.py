@@ -6,7 +6,7 @@ import pickle
 from torch.optim import SGD, Adam
 from avalanche.benchmarks.classic import SplitCIFAR10, SplitMNIST
 from avalanche.evaluation.metrics import accuracy_metrics, loss_metrics
-from avalanche.logging import InteractiveLogger
+from avalanche.logging import InteractiveLogger, TextLogger
 from avalanche.training.plugins import EvaluationPlugin
 from avalanche.training.supervised import Naive, Replay, JointTraining
 from utils import plot_explanations_grid, IncrementalMLP, get_background_and_test, \
@@ -166,17 +166,16 @@ def main(args):
     else:
         raise ValueError("Unrecognized explanator name")
 
-    interactive_logger = InteractiveLogger()
-    loggers = [interactive_logger]
+    log_f = open(os.path.join(folder_paths['joint'], 'logger.txt'), 'w')
     training_metrics = []
     evaluation_metrics = [
         accuracy_metrics(epoch=True, experience=True, stream=True),
         loss_metrics(epoch=True, experience=True, stream=True),
     ]
-    evaluator = EvaluationPlugin(
+    evaluator_joint = EvaluationPlugin(
         *training_metrics,
         *evaluation_metrics,
-        loggers=loggers,
+        loggers=[InteractiveLogger(), TextLogger(log_f)]
     )
     results_joint = []
     joint_strategy = JointTraining(
@@ -184,7 +183,7 @@ def main(args):
         optimizer=optimizers['joint'],
         criterion=torch.nn.CrossEntropyLoss(),
         train_epochs=args['joint_epochs'],
-        evaluator=evaluator,
+        evaluator=evaluator_joint,
         device=device,
         train_mb_size=args['joint_train_mb_size'],
         eval_mb_size=64
@@ -205,10 +204,20 @@ def main(args):
     torch.save(models['joint'].state_dict(), os.path.join(folder_paths['joint'], f'joint_model.pt'))
     with open(os.path.join(folder_paths['joint'], 'metrics_joint.pickle'), 'wb') as f:
         pickle.dump(results_joint, f)
+    log_f.close()
 
     # <------------ START CL STRATEGIES
     cl_strategies = {}
+    logs_f = {}
     for s in ['naive', 'gss', 'replay']:
+        logs_f[s] = open(os.path.join(folder_paths[s], 'logger.txt'), 'w')
+
+    for s in ['naive', 'gss', 'replay']:
+        evaluator = EvaluationPlugin(
+            *training_metrics,
+            *evaluation_metrics,
+            loggers=[InteractiveLogger(), TextLogger(logs_f[s])],
+        )
         if s == 'naive':
             cl_strategies['naive'] = Naive(
                 model=models['naive'],
@@ -217,7 +226,7 @@ def main(args):
                 evaluator=evaluator,
                 device=device,
                 train_mb_size=args['train_mb_size'],
-                eval_mb_size=64,
+                eval_mb_size=64
             )
         elif s == 'replay':
             cl_strategies['replay'] = Replay(
@@ -287,6 +296,8 @@ def main(args):
 
         with open(os.path.join(folder_paths[strategy_name], 'metrics.pickle'), 'wb') as f:
             pickle.dump(results, f)
+
+        logs_f[strategy_name].close()
 
 
 if __name__ == "__main__":

@@ -155,7 +155,8 @@ def main(args):
         dataset=benchmark.test_stream[0].dataset,
         num_background=args['num_background'],
         num_inputs_per_class=args['num_test_per_class'],
-        classes=(0, 1))
+        classes=(0, 1),
+        split_equal=(args['explanator'] == 'lift'))
 
     # <----------------------------- START JOINT
     if args['explanator'] == 'shap':
@@ -191,10 +192,11 @@ def main(args):
     joint_strategy.train(benchmark.train_stream)
     results_joint.append(joint_strategy.eval(benchmark.test_stream))
     explanations = []
+    print(back_test.shape, background.shape)
     for c in range(10):
         expl = joint_explanator.attribute(back_test.to(device),
-                                    background.to(device),
-                                    target=c).cpu()
+                                          background.to(device),
+                                          target=c).cpu()
 
         explanations.append(expl)
     plot_explanations_grid(explanations, back_test,

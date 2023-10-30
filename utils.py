@@ -323,7 +323,8 @@ def create_speech_benchmark(root, num_words=10, test_split=0.2):
     return benchmark
 
 def get_background_and_test(dataset, num_background=700, num_inputs_per_class=3, classes=(0, 1),
-                                 collate_fn=None):
+                                 collate_fn=None, split_equal=False):
+
     batch_size = num_background + num_inputs_per_class*len(classes)
     test_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
                                  collate_fn=collate_fn)
@@ -346,7 +347,10 @@ def get_background_and_test(dataset, num_background=700, num_inputs_per_class=3,
     for c in classes:
         idx = torch.nonzero(ys == c)
         idx_test = idx[:num_inputs_per_class]
-        idx_background = idx[num_inputs_per_class:]
+        if split_equal:
+            idx_background = idx[num_inputs_per_class:num_inputs_per_class*2]
+        else:
+            idx_background = idx[num_inputs_per_class:]
         test_inputs.append(xs[idx_test].squeeze(1))
         test_targets.append(ys[idx_test].squeeze(1))
         background_inputs.append(xs[idx_background].squeeze(1))

@@ -291,11 +291,10 @@ class SequenceClassifier(torch.nn.Module):
         return out
 
 
-def create_speech_benchmark(num_words=10, test_split=0.2):
+def create_speech_benchmark(root, num_words=10, test_split=0.2):
     assert num_words % 2 == 0, "The Speech dataset must have an even number of classes."
-    speech_path = '/disk3/cossu/synthethic_speech_commands_preprocessed'
-    classfiles = list(sorted(os.listdir(speech_path)))[:num_words]
-    all_tensors = [torch.from_numpy(np.load(os.path.join(speech_path, classfile))).float() for classfile in classfiles]
+    classfiles = list(sorted(os.listdir(root)))[:num_words]
+    all_tensors = [torch.from_numpy(np.load(os.path.join(root, classfile))).float() for classfile in classfiles]
 
     tensors = []
     for i in range(len(all_tensors)):
@@ -323,7 +322,7 @@ def create_speech_benchmark(num_words=10, test_split=0.2):
 
     return benchmark
 
-def get_shap_background_and_test(dataset, num_background=700, num_inputs_per_class=3, classes=(0, 1),
+def get_background_and_test(dataset, num_background=700, num_inputs_per_class=3, classes=(0, 1),
                                  collate_fn=None):
     batch_size = num_background + num_inputs_per_class*len(classes)
     test_dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True,
@@ -360,20 +359,20 @@ def get_shap_background_and_test(dataset, num_background=700, num_inputs_per_cla
     return background_inputs, test_inputs, test_targets
 
 
-def plot_shap_grid(shap_values, test_inputs, save_path, name='test', num_plots=6):
+def plot_explanations_grid(shap_values, test_inputs, save_path, name='test', num_plots=6):
     per_class_els = int(num_plots / 2)
     test_inputs = torch.cat((test_inputs[:per_class_els], test_inputs[-per_class_els:]))
     shap_values = [torch.cat((s[:per_class_els], s[-per_class_els:])) for s in shap_values]
     if len(shap_values[0].shape) != 4:
         # plot spectrogram as image
-        shap_numpy = [s.numpy()[..., np.newaxis] for s in shap_values]
-        test_numpy = test_inputs.numpy()[..., np.newaxis]
+        shap_numpy = [s.detach().numpy()[..., np.newaxis] for s in shap_values]
+        test_numpy = test_inputs.detach().numpy()[..., np.newaxis]
         shap.image_plot(shap_numpy, -test_numpy)
         plt.savefig(os.path.join(save_path, f'{name}.png'))
 
         # plot time series averaged over features and weighted by shap
         shap_numpy = [s.squeeze(-1).mean(axis=-1) for s in shap_numpy]
-        test_numpy = test_inputs.numpy().mean(axis=-1)
+        test_numpy = test_inputs.detach().numpy().mean(axis=-1)
         fig, ax = plt.subplots(test_numpy.shape[0], len(shap_numpy)+1, figsize=(20, 5))
         for i in range(test_numpy.shape[0]):
             ax[i, 0].plot(test_numpy[i], 'g-')
@@ -393,16 +392,16 @@ def plot_shap_grid(shap_values, test_inputs, save_path, name='test', num_plots=6
     else:
         # plot average over channels
         if len(shap_values[0].squeeze().shape) == 4:
-            shap_numpy = [np.swapaxes(np.swapaxes(s.sum(axis=1).numpy()[:, np.newaxis, ...], 1, -1), 1, 2) for s in shap_values]
+            shap_numpy = [np.swapaxes(np.swapaxes(s.sum(axis=1).detach().numpy()[:, np.newaxis, ...], 1, -1), 1, 2) for s in shap_values]
             shap_numpy = [torch.relu(torch.from_numpy(s)) for s in shap_numpy]
-            test_numpy = np.swapaxes(np.swapaxes(test_inputs.numpy().sum(axis=1)[:, np.newaxis, ...], 1, -1), 1, 2)
+            test_numpy = np.swapaxes(np.swapaxes(test_inputs.detach().numpy().sum(axis=1)[:, np.newaxis, ...], 1, -1), 1, 2)
             shap.image_plot(shap_numpy, -test_numpy)
             plt.savefig(os.path.join(save_path, f'{name}_sum_channels.png'))
 
         # for each channel, print shap
         for c in range(test_inputs.shape[1]):
-            shap_numpy = [np.swapaxes(np.swapaxes(s.numpy()[:, c, ...][:, np.newaxis, ...], 1, -1), 1, 2) for s in shap_values]
-            test_numpy = np.swapaxes(np.swapaxes(test_inputs.numpy()[:, c, ...][:, np.newaxis, ...], 1, -1), 1, 2)
+            shap_numpy = [np.swapaxes(np.swapaxes(s.detach().numpy()[:, c, ...][:, np.newaxis, ...], 1, -1), 1, 2) for s in shap_values]
+            test_numpy = np.swapaxes(np.swapaxes(test_inputs.detach().numpy()[:, c, ...][:, np.newaxis, ...], 1, -1), 1, 2)
             shap_numpy = [torch.relu(torch.from_numpy(s)) for s in shap_numpy]
             shap.image_plot(shap_numpy, -test_numpy)
             plt.savefig(os.path.join(save_path, f'{name}_c{c}.png'))

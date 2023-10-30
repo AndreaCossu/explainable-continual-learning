@@ -9,16 +9,17 @@ from avalanche.evaluation.metrics import accuracy_metrics, loss_metrics
 from avalanche.logging import InteractiveLogger
 from avalanche.training.plugins import EvaluationPlugin
 from avalanche.training.supervised import Naive, Replay, JointTraining
-from utils import plot_shap_grid, IncrementalMLP, get_shap_background_and_test, \
+from utils import plot_explanations_grid, IncrementalMLP, get_background_and_test, \
     ReducedResNet18, SequenceClassifier, create_speech_benchmark, MyGSS, CNN1D
 import json
-from captum.attr import GradientShap
+from captum.attr import GradientShap, DeepLift
 from esn import DeepReservoirClassifier
+from ron import RON
 
 
 def main(args):
     strategies = ['naive', 'gss', 'replay', 'joint']
-    exp_names = [f"{s}_{args['dataset']}" for s in strategies]
+    exp_names = [f"{s}_{args['dataset']}_{args['model']}" for s in strategies]
     folder_paths = dict(
         [(e.split('_')[0], os.path.join(args['experiment_folder'], e)) for e in exp_names]
     )
@@ -36,6 +37,7 @@ def main(args):
     optimizers = {}
 
     if args['dataset'] == 'cifar':
+        assert args['model'] == 'cnn'
         input_size = [3, 32, 32]
         train_transform = transforms.Compose(
             [
@@ -72,6 +74,7 @@ def main(args):
         optimizers['replay'] = Adam(models['replay'].parameters(), lr=args['lr'])
         optimizers['joint'] = Adam(models['joint'].parameters(), lr=args['joint_lr'])
     elif args['dataset'] == 'mnist':
+        assert args['model'] == 'mlp'
         input_size = [1, 28, 28]
         benchmark = SplitMNIST(5, return_task_id=False,
                                fixed_class_order=list(range(10)),
@@ -88,32 +91,57 @@ def main(args):
         optimizers['replay'] = SGD(models['replay'].parameters(), lr=args['lr'])
         optimizers['joint'] = SGD(models['joint'].parameters(), lr=args['joint_lr'])
     elif args['dataset'] == 'speech':
+        assert args['model'] in ['esn', 'rnn', 'ron']
+
         input_size = [101, 40]
-        benchmark = create_speech_benchmark(num_words=10, test_split=0.2)
-        if args['esn']:
-            models['naive'] = DeepReservoirClassifier(40, units=2000, layers=1, spectral_radius=0.99,
+        benchmark = create_speech_benchmark(args['speech_root'], num_words=10, test_split=0.2)
+        if args['model'] == 'esn':
+            models['naive'] = DeepReservoirClassifier(40, units=args['hidden_size'], layers=1, spectral_radius=args['spectral_radius'],
                                                       input_scaling=1, feedforward_layers=1, connectivity_input=100,
                                                       connectivity_recurrent=50, leaky=0.1)
-            models['gss'] = DeepReservoirClassifier(40, units=2000, layers=1, spectral_radius=0.99,
+            models['gss'] = DeepReservoirClassifier(40, units=args['hidden_size'], layers=1, spectral_radius=args['spectral_radius'],
                                                       input_scaling=1, feedforward_layers=1, connectivity_input=100,
                                                       connectivity_recurrent=50, leaky=0.1)
-            models['replay'] = DeepReservoirClassifier(40, units=2000, layers=1, spectral_radius=0.99,
+            models['replay'] = DeepReservoirClassifier(40, units=args['hidden_size'], layers=1, spectral_radius=args['spectral_radius'],
                                                       input_scaling=1, feedforward_layers=1, connectivity_input=100,
                                                       connectivity_recurrent=50, leaky=0.1)
-            models['joint'] = DeepReservoirClassifier(40, units=2000, layers=1, spectral_radius=0.99,
+            models['joint'] = DeepReservoirClassifier(40, units=args['hidden_size'], layers=1, spectral_radius=args['spectral_radius'],
                                                       input_scaling=1, feedforward_layers=1, connectivity_input=100,
                                                       connectivity_recurrent=50, leaky=0.1, initial_out_features=10)
-        elif args['cnn']:
+        elif args['model'] == 'cnn':
             models['naive'] = CNN1D()
             models['gss'] = CNN1D()
             models['replay'] = CNN1D()
             models['joint'] = CNN1D(initial_out_features=10)
-        else:
+        elif args['model'] == 'ron':
+            models['naive'] = RON(n_inp=40, n_hid=args['hidden_size'], dt=args['dt'],
+                                  gamma_min=args['gamma_min'], gamma_max=args['gamma_max'],
+                                  eps_min=args['epsilon_min'], eps_max=args['epsilon_max'],
+                                  rho=args['spectral_radius'], input_scaling=args['input_scaling'],
+                                  device=device, return_sequences=False)
+            models['gss'] = RON(n_inp=40, n_hid=args['hidden_size'], dt=args['dt'],
+                                  gamma_min=args['gamma_min'], gamma_max=args['gamma_max'],
+                                  eps_min=args['epsilon_min'], eps_max=args['epsilon_max'],
+                                  rho=args['spectral_radius'], input_scaling=args['input_scaling'],
+                                  device=device, return_sequences=False)
+            models['replay'] = RON(n_inp=40, n_hid=args['hidden_size'], dt=args['dt'],
+                                  gamma_min=args['gamma_min'], gamma_max=args['gamma_max'],
+                                  eps_min=args['epsilon_min'], eps_max=args['epsilon_max'],
+                                  rho=args['spectral_radius'], input_scaling=args['input_scaling'],
+                                  device=device, return_sequences=False)
+            models['joint'] = RON(n_inp=40, n_hid=args['hidden_size'], dt=args['dt'],
+                                  gamma_min=args['gamma_min'], gamma_max=args['gamma_max'],
+                                  eps_min=args['epsilon_min'], eps_max=args['epsilon_max'],
+                                  rho=args['spectral_radius'], input_scaling=args['input_scaling'],
+                                  device=device, return_sequences=False, initial_out_features=10)
+        elif args['model'] == 'rnn':
             models['naive'] = SequenceClassifier(input_size=40, hidden_size=256, rnn_layers=2, batch_first=True)
             models['gss'] = SequenceClassifier(input_size=40, hidden_size=256, rnn_layers=2, batch_first=True)
             models['replay'] = SequenceClassifier(input_size=40, hidden_size=256, rnn_layers=2, batch_first=True)
             models['joint'] = SequenceClassifier(input_size=40, hidden_size=256, rnn_layers=2, batch_first=True,
                                                  initial_out_features=10)
+        else:
+            raise ValueError("Wrong model name")
 
         optimizers['naive'] = Adam(models['naive'].parameters(), lr=args['lr'])
         optimizers['gss'] = Adam(models['gss'].parameters(), lr=args['lr'])
@@ -122,15 +150,20 @@ def main(args):
     else:
         raise ValueError("Unrecognized dataset name")
 
-    # <-------------------------- GET TEST EXAMPLES
-    shap_background, shap_test, shap_test_targets = get_shap_background_and_test(
+    # <-------------------------- GET BACKGROUND EXAMPLES
+    background, back_test, back_test_targets = get_background_and_test(
         dataset=benchmark.test_stream[0].dataset,
         num_background=args['num_background'],
         num_inputs_per_class=args['num_test_per_class'],
         classes=(0, 1))
 
     # <----------------------------- START JOINT
-    joint_shap = GradientShap(models['joint'])
+    if args['explanator'] == 'shap':
+        joint_explanator = GradientShap(models['joint'])
+    elif args['explanator'] == 'lift':
+        joint_explanator = DeepLift(models['joint'])
+    else:
+        raise ValueError("Unrecognized explanator name")
 
     interactive_logger = InteractiveLogger()
     loggers = [interactive_logger]
@@ -159,13 +192,14 @@ def main(args):
     results_joint.append(joint_strategy.eval(benchmark.test_stream))
     explanations = []
     for c in range(10):
-        expl = joint_shap.attribute(shap_test.to(device),
-                                    shap_background.to(device),
+        expl = joint_explanator.attribute(back_test.to(device),
+                                    background.to(device),
                                     target=c).cpu()
+
         explanations.append(expl)
-    plot_shap_grid(explanations, shap_test,
+    plot_explanations_grid(explanations, back_test,
                    folder_paths['joint'], name=f'joint_{args["dataset"]}', num_plots=args['num_plots'])
-    torch.save([explanations, shap_test, shap_test_targets], os.path.join(folder_paths['joint'], f'explanations_and_examples_joint.pt'))
+    torch.save([explanations, back_test, back_test_targets], os.path.join(folder_paths['joint'], f'explanations_and_examples_joint.pt'))
     torch.save(models['joint'].state_dict(), os.path.join(folder_paths['joint'], f'joint_model.pt'))
     with open(os.path.join(folder_paths['joint'], 'metrics_joint.pickle'), 'wb') as f:
         pickle.dump(results_joint, f)
@@ -215,7 +249,12 @@ def main(args):
         results = []
         cl_strategy = v['strategy']
         model = v['model']
-        shap = GradientShap(model)
+        if args['explanator'] == 'shap':
+            explanator = GradientShap(model)
+        elif args['explanator'] == 'lift':
+            explanator = DeepLift(model)
+        else:
+            raise ValueError("Unrecognized explanator name")
 
         for i, experience in enumerate(benchmark.train_stream):
             cl_strategy.train(
@@ -230,17 +269,17 @@ def main(args):
                 classes_so_far = classes_so_far.union(set(benchmark.classes_in_experience['train'][e]))
             classes_so_far = list(classes_so_far)
 
-            # predict shap values related to all the classes so far.
+            # predict explanations values related to all the classes so far.
             # explanations is a list with n_classes elements. Each element is a numpy array of shape (num_test, input_shape),
             # where input_shape is (1, 28, 28) for MNIST, (3, 32, 32) for CIFAR10, (101, 40) for Speech.
             explanations = []
             for c in classes_so_far:
-                expl = shap.attribute(shap_test.to(device), shap_background.to(device), target=c).cpu()
+                expl = explanator.attribute(back_test.to(device), background.to(device), target=c).cpu()
                 explanations.append(expl)
 
-            torch.save([explanations, shap_test, shap_test_targets], os.path.join(folder_paths[strategy_name], f'explanations_and_examples_{i}.pt'))
+            torch.save([explanations, back_test, back_test_targets], os.path.join(folder_paths[strategy_name], f'explanations_and_examples_{i}.pt'))
             torch.save(model.state_dict(), os.path.join(folder_paths[strategy_name], f'model{i}.pt'))
-            plot_shap_grid(explanations, shap_test,
+            plot_explanations_grid(explanations, back_test,
                            folder_paths[strategy_name], name=f'{strategy_name}_{args["dataset"]}_{i}',
                            num_plots=args['num_plots'])
 
@@ -259,13 +298,24 @@ if __name__ == "__main__":
     parser.add_argument('--joint_epochs', type=int, default=10)
     parser.add_argument('--joint_train_mb_size', type=int, default=64)
 
-    parser.add_argument('--esn', action="store_true")
-    parser.add_argument('--cnn', action="store_true")
+    parser.add_argument('--dt', type=float, default=0.1)
+    parser.add_argument('--gamma_min', type=float, default=1)
+    parser.add_argument('--gamma_max', type=float, default=1)
+    parser.add_argument('--epsilon_min', type=float, default=0.1)
+    parser.add_argument('--epsilon_max', type=float, default=0.1)
+
+    parser.add_argument('--spectral_radius', type=float, default=0.99)
+    parser.add_argument('--input_scaling', type=float, default=1)
+
+    parser.add_argument('--hidden_size', type=int, default=2000)
     parser.add_argument('--num_background', type=int, default=600)
     parser.add_argument('--replay_mem_size', type=int, default=100)
     parser.add_argument('--num_test_per_class', type=int, default=50)
     parser.add_argument('--num_plots', type=int, default=6)
-    parser.add_argument('--experiment_folder', type=str, default='/disk3/a.cossu/explainable-continual-learning/results')
+    parser.add_argument('--speech_root', type=str, default='/home/a.cossu/synthethic_speech_commands_preprocessed')
+    parser.add_argument('--experiment_folder', type=str, default='/home/a.cossu/explainable-continual-learning/results')
     parser.add_argument('--dataset', type=str, choices=['mnist', 'cifar', 'speech'], default='mnist')
+    parser.add_argument('--explanator', type=str, choices=['shap', 'lift'], default='shap')
+    parser.add_argument('--model', type=str, choices=['mlp', 'cnn', 'rnn', 'ron', 'esn'], default='mlp')
     args = vars(parser.parse_args())
     main(args)

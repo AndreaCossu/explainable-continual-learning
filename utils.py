@@ -363,55 +363,55 @@ def get_background_and_test(dataset, num_background=700, num_inputs_per_class=3,
     return background_inputs, test_inputs, test_targets
 
 
-def plot_explanations_grid(shap_values, test_inputs, save_path, name='test', num_plots=6):
+def plot_explanations_grid(expl_values, test_inputs, save_path, name='test', num_plots=6):
     per_class_els = int(num_plots / 2)
     test_inputs = torch.cat((test_inputs[:per_class_els], test_inputs[-per_class_els:]))
-    shap_values = [torch.cat((s[:per_class_els], s[-per_class_els:])) for s in shap_values]
-    if len(shap_values[0].shape) != 4:
+    expl_values = [torch.cat((s[:per_class_els], s[-per_class_els:])) for s in expl_values]
+    if len(expl_values[0].shape) != 4:
         # plot spectrogram as image
-        shap_numpy = [s.detach().numpy()[..., np.newaxis] for s in shap_values]
+        expl_numpy = [s.detach().numpy()[..., np.newaxis] for s in expl_values]
         test_numpy = test_inputs.detach().numpy()[..., np.newaxis]
-        shap.image_plot(shap_numpy, -test_numpy)
+        shap.image_plot(expl_numpy, -test_numpy)
         plt.savefig(os.path.join(save_path, f'{name}.png'))
 
-        # plot time series averaged over features and weighted by shap
-        shap_numpy = [s.squeeze(-1).mean(axis=-1) for s in shap_numpy]
+        # plot time series averaged over features and weighted by explanation value
+        expl_numpy = [s.squeeze(-1).mean(axis=-1) for s in expl_numpy]
         test_numpy = test_inputs.detach().numpy().mean(axis=-1)
-        fig, ax = plt.subplots(test_numpy.shape[0], len(shap_numpy)+1, figsize=(20, 5))
+        fig, ax = plt.subplots(test_numpy.shape[0], len(expl_numpy) + 1, figsize=(20, 5))
         for i in range(test_numpy.shape[0]):
             ax[i, 0].plot(test_numpy[i], 'g-')
             ax[i, 0].set_ylim(-1, 3)
         default_cmap = plt.get_cmap('Greys')
         for i in range(test_numpy.shape[0]):
-            for j in range(len(shap_numpy)):
-                shap_numpy_norm = (shap_numpy[j][i] - shap_numpy[j][i].min()) / (shap_numpy[j][i].max() - shap_numpy[j][i].min())
+            for j in range(len(expl_numpy)):
+                expl_numpy_norm = (expl_numpy[j][i] - expl_numpy[j][i].min()) / (expl_numpy[j][i].max() - expl_numpy[j][i].min())
                 ax[i, j+1].plot(np.arange(test_numpy.shape[1]), test_numpy[i], c='white')
                 for k in range(test_numpy[i].shape[0]):
                     ax[i, j+1].plot([k], test_numpy[i][k],
-                                  linewidth=0., marker='o',
-                                  c=default_cmap(shap_numpy_norm[k]),
-                                  markersize=0.5)
+                                    linewidth=0., marker='o',
+                                    c=default_cmap(expl_numpy_norm[k]),
+                                    markersize=0.5)
                 ax[i, j+1].set_ylim(-1, 3)
         plt.savefig(os.path.join(save_path, f'{name}_timeseries.png'))
     else:
         # plot average over channels
-        if len(shap_values[0].squeeze().shape) == 4:
-            shap_numpy = [np.swapaxes(np.swapaxes(s.sum(axis=1).detach().numpy()[:, np.newaxis, ...], 1, -1), 1, 2) for s in shap_values]
-            shap_numpy = [torch.relu(torch.from_numpy(s)) for s in shap_numpy]
+        if len(expl_values[0].squeeze().shape) == 4:
+            expl_numpy = [np.swapaxes(np.swapaxes(s.sum(axis=1).detach().numpy()[:, np.newaxis, ...], 1, -1), 1, 2) for s in expl_values]
+            expl_numpy = [torch.relu(torch.from_numpy(s)) for s in expl_numpy]
             test_numpy = np.swapaxes(np.swapaxes(test_inputs.detach().numpy().sum(axis=1)[:, np.newaxis, ...], 1, -1), 1, 2)
-            shap.image_plot(shap_numpy, -test_numpy)
+            shap.image_plot(expl_numpy, -test_numpy)
             plt.savefig(os.path.join(save_path, f'{name}_sum_channels.png'))
 
-        # for each channel, print shap
+        # for each channel, print explanation
         for c in range(test_inputs.shape[1]):
-            shap_numpy = [np.swapaxes(np.swapaxes(s.detach().numpy()[:, c, ...][:, np.newaxis, ...], 1, -1), 1, 2) for s in shap_values]
+            expl_numpy = [np.swapaxes(np.swapaxes(s.detach().numpy()[:, c, ...][:, np.newaxis, ...], 1, -1), 1, 2) for s in expl_values]
             test_numpy = np.swapaxes(np.swapaxes(test_inputs.detach().numpy()[:, c, ...][:, np.newaxis, ...], 1, -1), 1, 2)
-            shap_numpy = [torch.relu(torch.from_numpy(s)) for s in shap_numpy]
-            shap.image_plot(shap_numpy, -test_numpy)
+            expl_numpy = [torch.relu(torch.from_numpy(s)) for s in expl_numpy]
+            shap.image_plot(expl_numpy, -test_numpy)
             plt.savefig(os.path.join(save_path, f'{name}_c{c}.png'))
 
 
-def plot_shap_single(explanations, shap_test, folder_path, name='single'):
+def plot_explanations_single(explanations, expl_test, folder_path, name='single'):
     default_cmap = LinearSegmentedColormap.from_list('custom blue',
                                                      [(0, '#ffffff'),
                                                       (0.25, '#000000'),
@@ -419,7 +419,7 @@ def plot_shap_single(explanations, shap_test, folder_path, name='single'):
     for ex_id in range(explanations.shape[0]):
         captum.attr.visualization.visualize_image_attr_multiple(
             np.transpose(explanations[ex_id].cpu().detach().numpy(), (1, 2, 0)),
-            np.transpose(shap_test[ex_id].cpu().detach().numpy(), (1, 2, 0)),
+            np.transpose(expl_test[ex_id].cpu().detach().numpy(), (1, 2, 0)),
             ["original_image", "heat_map"],
             ["all", "absolute_value"],
             cmap=default_cmap,

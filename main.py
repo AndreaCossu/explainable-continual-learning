@@ -19,7 +19,7 @@ from ron import RON
 
 def main(args):
     strategies = ['naive', 'gss', 'replay', 'joint']
-    exp_names = [f"{s}_{args['dataset']}_{args['model']}" for s in strategies]
+    exp_names = [f"{s}_{args['dataset']}_{args['model']}_{args['explanator']}" for s in strategies]
     folder_paths = dict(
         [(e.split('_')[0], os.path.join(args['experiment_folder'], e)) for e in exp_names]
     )
@@ -91,7 +91,7 @@ def main(args):
         optimizers['replay'] = SGD(models['replay'].parameters(), lr=args['lr'])
         optimizers['joint'] = SGD(models['joint'].parameters(), lr=args['joint_lr'])
     elif args['dataset'] == 'speech':
-        assert args['model'] in ['esn', 'rnn', 'ron']
+        assert args['model'] in ['esn', 'rnn', 'ron', 'cnn']
 
         input_size = [101, 40]
         benchmark = create_speech_benchmark(args['speech_root'], num_words=10, test_split=0.2)
@@ -198,8 +198,8 @@ def main(args):
                                           target=c).cpu()
 
         explanations.append(expl)
-    plot_explanations_grid(explanations, back_test,
-                   folder_paths['joint'], name=f'joint_{args["dataset"]}', num_plots=args['num_plots'])
+    plot_explanations_grid(explanations, back_test, folder_paths['joint'], name=f'joint_{args["dataset"]}',
+                           num_plots=args['num_plots'])
     torch.save([explanations, back_test, back_test_targets], os.path.join(folder_paths['joint'], f'explanations_and_examples_joint.pt'))
     torch.save(models['joint'].state_dict(), os.path.join(folder_paths['joint'], f'joint_model.pt'))
     with open(os.path.join(folder_paths['joint'], 'metrics_joint.pickle'), 'wb') as f:
@@ -290,9 +290,8 @@ def main(args):
 
             torch.save([explanations, back_test, back_test_targets], os.path.join(folder_paths[strategy_name], f'explanations_and_examples_{i}.pt'))
             torch.save(model.state_dict(), os.path.join(folder_paths[strategy_name], f'model{i}.pt'))
-            plot_explanations_grid(explanations, back_test,
-                           folder_paths[strategy_name], name=f'{strategy_name}_{args["dataset"]}_{i}',
-                           num_plots=args['num_plots'])
+            plot_explanations_grid(explanations, back_test, folder_paths[strategy_name],
+                                   name=f'{strategy_name}_{args["dataset"]}_{i}', num_plots=args['num_plots'])
 
         with open(os.path.join(folder_paths[strategy_name], 'metrics.pickle'), 'wb') as f:
             pickle.dump(results, f)

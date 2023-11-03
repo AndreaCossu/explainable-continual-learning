@@ -223,11 +223,10 @@ class CNN1D(nn.Module):
 class IncrementalMLP(nn.Module):
     def __init__(
         self,
-        num_classes=10,
         input_size=28 * 28,
         hidden_size=512,
         hidden_layers=1,
-        drop_rate=0.5,
+        drop_rate=0.,
         initial_out_features=2
     ):
         super().__init__()

@@ -60,6 +60,7 @@ def compare_joint_vs_cl_sum(expl_joint, expl_cl, examples_per_class=50):
     return mse_0_list, mse_1_list
 
 
+@torch.no_grad()
 def compare_joint_vs_cl_elementwise(expl_joint, expl_cl, examples_per_class=50):
     mse_0_list, mse_1_list = [], []
     for class_id, (ej, ec) in enumerate(zip(expl_joint, expl_cl)):
@@ -71,6 +72,7 @@ def compare_joint_vs_cl_elementwise(expl_joint, expl_cl, examples_per_class=50):
     return mse_0_list, mse_1_list
 
 
+@torch.no_grad()
 def plot_expl_difference(mse_0_list, mse_1_list, path, suffix=''):
     plt.rc('xtick',labelsize=28)
     plt.rc('ytick',labelsize=28)
@@ -85,13 +87,12 @@ def plot_expl_difference(mse_0_list, mse_1_list, path, suffix=''):
     plt.close()
 
 
-
 if __name__ == '__main__':
-    base_path = '/home/a.cossu/explainable-continual-learning/results/'
+    base_path = '/home/a.cossu/explainable-continual-learning/results'
 
     strategies = ['naive', 'replay', 'gss', 'joint']
     datasets = ['mnist', 'cifar', 'speech']
-    dat_to_model = {'mnist': ['mlp'], 'cifar': ['cnn'], 'speech': ['rnn', 'esn', 'ron']}
+    dat_to_model = {'mnist': ['mlp'], 'cifar': ['cnn'], 'speech': ['rnn', 'esn', 'ron', 'cnn']}
     explanators = ['shap', 'lift']
     max_pools = {'mnist': 28, 'cifar': 32, 'speech': 10}
 

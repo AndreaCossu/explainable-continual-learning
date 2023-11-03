@@ -18,7 +18,17 @@ from ron import RON
 
 
 def main(args):
-    strategies = ['naive', 'gss', 'replay', 'joint']
+    if args['debug_strategy']:
+        if args['debug_strategy'] == 'joint':
+            cl_strategies_list = []
+            strategies = ['joint']
+        else:
+            cl_strategies_list = [args['debug_strategy']]
+            strategies = cl_strategies_list
+    else:
+        cl_strategies_list = ['naive', 'gss', 'replay']
+        strategies = cl_strategies_list + ['joint']
+
     exp_names = [f"{s}_{args['dataset']}_{args['model']}_{args['explanator']}" for s in strategies]
     folder_paths = dict(
         [(e.split('_')[0], os.path.join(args['experiment_folder'], e)) for e in exp_names]
@@ -80,16 +90,16 @@ def main(args):
                                fixed_class_order=list(range(10)),
                                shuffle=True,
                                class_ids_from_zero_in_each_exp=False)
-        models['naive'] = IncrementalMLP(num_classes=10, input_size=28*28, hidden_size=256, hidden_layers=1)
-        models['gss'] = IncrementalMLP(num_classes=10, input_size=28*28, hidden_size=256, hidden_layers=1)
-        models['replay'] = IncrementalMLP(num_classes=10, input_size=28*28, hidden_size=256, hidden_layers=1)
-        models['joint'] = IncrementalMLP(num_classes=10, input_size=28*28, hidden_size=256, hidden_layers=1,
+        models['naive'] = IncrementalMLP(input_size=28*28, hidden_size=args['hidden_size'], hidden_layers=1)
+        models['gss'] = IncrementalMLP(input_size=28*28, hidden_size=args['hidden_size'], hidden_layers=1)
+        models['replay'] = IncrementalMLP(input_size=28*28, hidden_size=args['hidden_size'], hidden_layers=1)
+        models['joint'] = IncrementalMLP(input_size=28*28, hidden_size=args['hidden_size'], hidden_layers=1,
                                          initial_out_features=10)
 
-        optimizers['naive'] = SGD(models['naive'].parameters(), lr=args['lr'])
-        optimizers['gss'] = SGD(models['gss'].parameters(), lr=args['lr'])
-        optimizers['replay'] = SGD(models['replay'].parameters(), lr=args['lr'])
-        optimizers['joint'] = SGD(models['joint'].parameters(), lr=args['joint_lr'])
+        optimizers['naive'] = SGD(models['naive'].parameters(), lr=args['lr'], momentum=0.9)
+        optimizers['gss'] = SGD(models['gss'].parameters(), lr=args['lr'], momentum=0.9)
+        optimizers['replay'] = SGD(models['replay'].parameters(), lr=args['lr'], momentum=0.9)
+        optimizers['joint'] = SGD(models['joint'].parameters(), lr=args['joint_lr'], momentum=0.9)
     elif args['dataset'] == 'speech':
         assert args['model'] in ['esn', 'rnn', 'ron', 'cnn']
 
@@ -135,10 +145,10 @@ def main(args):
                                   rho=args['spectral_radius'], input_scaling=args['input_scaling'],
                                   device=device, return_sequences=False, initial_out_features=10)
         elif args['model'] == 'rnn':
-            models['naive'] = SequenceClassifier(input_size=40, hidden_size=256, rnn_layers=2, batch_first=True)
-            models['gss'] = SequenceClassifier(input_size=40, hidden_size=256, rnn_layers=2, batch_first=True)
-            models['replay'] = SequenceClassifier(input_size=40, hidden_size=256, rnn_layers=2, batch_first=True)
-            models['joint'] = SequenceClassifier(input_size=40, hidden_size=256, rnn_layers=2, batch_first=True,
+            models['naive'] = SequenceClassifier(input_size=40, hidden_size=args['hidden_size'], rnn_layers=2, batch_first=True)
+            models['gss'] = SequenceClassifier(input_size=40, hidden_size=args['hidden_size'], rnn_layers=2, batch_first=True)
+            models['replay'] = SequenceClassifier(input_size=40, hidden_size=args['hidden_size'], rnn_layers=2, batch_first=True)
+            models['joint'] = SequenceClassifier(input_size=40, hidden_size=args['hidden_size'], rnn_layers=2, batch_first=True,
                                                  initial_out_features=10)
         else:
             raise ValueError("Wrong model name")
@@ -158,61 +168,63 @@ def main(args):
         classes=(0, 1),
         split_equal=(args['explanator'] == 'lift'))
 
-    # <----------------------------- START JOINT
-    if args['explanator'] == 'shap':
-        joint_explanator = GradientShap(models['joint'])
-    elif args['explanator'] == 'lift':
-        joint_explanator = DeepLift(models['joint'])
-    else:
-        raise ValueError("Unrecognized explanator name")
-
-    log_f = open(os.path.join(folder_paths['joint'], 'logger.txt'), 'w')
     training_metrics = []
     evaluation_metrics = [
         accuracy_metrics(epoch=True, experience=True, stream=True),
         loss_metrics(epoch=True, experience=True, stream=True),
     ]
-    evaluator_joint = EvaluationPlugin(
-        *training_metrics,
-        *evaluation_metrics,
-        loggers=[InteractiveLogger(), TextLogger(log_f)]
-    )
-    results_joint = []
-    joint_strategy = JointTraining(
-        model=models['joint'],
-        optimizer=optimizers['joint'],
-        criterion=torch.nn.CrossEntropyLoss(),
-        train_epochs=args['joint_epochs'],
-        evaluator=evaluator_joint,
-        device=device,
-        train_mb_size=args['joint_train_mb_size'],
-        eval_mb_size=64
-    )
-    joint_strategy.train(benchmark.train_stream)
-    results_joint.append(joint_strategy.eval(benchmark.test_stream))
-    explanations = []
-    print(back_test.shape, background.shape)
-    for c in range(10):
-        expl = joint_explanator.attribute(back_test.to(device),
-                                          background.to(device),
-                                          target=c).cpu()
+    # <----------------------------- START JOINT
+    if 'joint' in strategies:
+        if args['explanator'] == 'shap':
+            joint_explanator = GradientShap(models['joint'])
+        elif args['explanator'] == 'lift':
+            joint_explanator = DeepLift(models['joint'])
+        else:
+            raise ValueError("Unrecognized explanator name")
 
-        explanations.append(expl)
-    plot_explanations_grid(explanations, back_test, folder_paths['joint'], name=f'joint_{args["dataset"]}',
-                           num_plots=args['num_plots'])
-    torch.save([explanations, back_test, back_test_targets], os.path.join(folder_paths['joint'], f'explanations_and_examples_joint.pt'))
-    torch.save(models['joint'].state_dict(), os.path.join(folder_paths['joint'], f'joint_model.pt'))
-    with open(os.path.join(folder_paths['joint'], 'metrics_joint.pickle'), 'wb') as f:
-        pickle.dump(results_joint, f)
-    log_f.close()
+        log_f = open(os.path.join(folder_paths['joint'], 'logger.txt'), 'w')
+
+        evaluator_joint = EvaluationPlugin(
+            *training_metrics,
+            *evaluation_metrics,
+            loggers=[InteractiveLogger(), TextLogger(log_f)]
+        )
+        results_joint = []
+        joint_strategy = JointTraining(
+            model=models['joint'],
+            optimizer=optimizers['joint'],
+            criterion=torch.nn.CrossEntropyLoss(),
+            train_epochs=args['joint_epochs'],
+            evaluator=evaluator_joint,
+            device=device,
+            train_mb_size=args['joint_train_mb_size'],
+            eval_mb_size=64
+        )
+        joint_strategy.train(benchmark.train_stream)
+        results_joint.append(joint_strategy.eval(benchmark.test_stream))
+        explanations = []
+        print(back_test.shape, background.shape)
+        for c in range(10):
+            expl = joint_explanator.attribute(back_test.to(device),
+                                              background.to(device),
+                                              target=c).cpu()
+
+            explanations.append(expl)
+        plot_explanations_grid(explanations, back_test, folder_paths['joint'], name=f'joint_{args["dataset"]}',
+                               num_plots=args['num_plots'])
+        torch.save([explanations, back_test, back_test_targets], os.path.join(folder_paths['joint'], f'explanations_and_examples_joint.pt'))
+        torch.save(models['joint'].state_dict(), os.path.join(folder_paths['joint'], f'joint_model.pt'))
+        with open(os.path.join(folder_paths['joint'], 'metrics_joint.pickle'), 'wb') as f:
+            pickle.dump(results_joint, f)
+        log_f.close()
 
     # <------------ START CL STRATEGIES
     cl_strategies = {}
     logs_f = {}
-    for s in ['naive', 'gss', 'replay']:
+    for s in cl_strategies_list:
         logs_f[s] = open(os.path.join(folder_paths[s], 'logger.txt'), 'w')
 
-    for s in ['naive', 'gss', 'replay']:
+    for s in cl_strategies_list:
         evaluator = EvaluationPlugin(
             *training_metrics,
             *evaluation_metrics,
@@ -319,7 +331,7 @@ if __name__ == "__main__":
     parser.add_argument('--spectral_radius', type=float, default=0.99)
     parser.add_argument('--input_scaling', type=float, default=1)
 
-    parser.add_argument('--hidden_size', type=int, default=2000)
+    parser.add_argument('--hidden_size', type=int, default=256)
     parser.add_argument('--num_background', type=int, default=600)
     parser.add_argument('--replay_mem_size', type=int, default=100)
     parser.add_argument('--num_test_per_class', type=int, default=50)
@@ -329,5 +341,6 @@ if __name__ == "__main__":
     parser.add_argument('--dataset', type=str, choices=['mnist', 'cifar', 'speech'], default='mnist')
     parser.add_argument('--explanator', type=str, choices=['shap', 'lift'], default='shap')
     parser.add_argument('--model', type=str, choices=['mlp', 'cnn', 'rnn', 'ron', 'esn'], default='mlp')
+    parser.add_argument('--debug_strategy', type=str, choices=['naive', 'gss', 'replay', 'joint'])
     args = vars(parser.parse_args())
     main(args)

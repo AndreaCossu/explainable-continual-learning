@@ -274,6 +274,7 @@ class SequenceClassifier(torch.nn.Module):
     ):
         super().__init__()
         self.batch_first = batch_first
+        self.input_size = input_size
         self.rnn = torch.nn.LSTM(
             input_size,
             hidden_size,
@@ -284,6 +285,9 @@ class SequenceClassifier(torch.nn.Module):
 
 
     def forward(self, x):
+        if len(x.shape) == 4:  # CIFAR, put channels together
+            x = torch.transpose(x, 1, 3).contiguous()
+        x = x.view(x.size(0), -1, self.input_size)  # (B, L, I)
         out, _ = self.rnn(x)
         out = out[:, -1] if self.batch_first else out[-1]
         out = self.classifier(out)

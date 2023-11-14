@@ -1,8 +1,7 @@
 import os
 import torch
 import matplotlib.pyplot as plt
-from utils import ReducedResNet18, IncrementalMLP, SequenceClassifier
-
+import argparse
 
 @torch.no_grad()
 def load_joint(path, relu=True):
@@ -88,11 +87,16 @@ def plot_expl_difference(mse_0_list, mse_1_list, path, suffix=''):
 
 
 if __name__ == '__main__':
-    base_path = '/home/a.cossu/explainable-continual-learning/results'
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--path', type=str)
+    args = parser.parse_args()
+
+    base_path = args.path
 
     strategies = ['naive', 'replay', 'gss', 'joint']
     datasets = ['mnist', 'cifar', 'speech']
-    dat_to_model = {'mnist': ['mlp'], 'cifar': ['cnn'], 'speech': ['rnn', 'esn', 'ron', 'cnn']}
+    dat_to_model = {'mnist': ['mlp'], 'cifar': ['cnn'],
+                    'speech': ['rnn', 'esn', 'ron', 'cnn']}
     explanators = ['shap', 'lift']
     max_pools = {'mnist': 28, 'cifar': 32, 'speech': 10}
 

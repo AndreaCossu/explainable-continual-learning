@@ -72,7 +72,7 @@ def sparse_recurrent_tensor_init(M: int, C: int = 1) -> torch.FloatTensor:
     :param C: number of nonzero elements
     :return: MxM dense matrix
     """
-    assert M > C
+    assert M >= C
     dense_shape = torch.Size([M, M])  # the shape of the dense version of the matrix
     indices = torch.zeros((M * C, 2), dtype=torch.long)
     k = 0
@@ -337,6 +337,7 @@ class DeepReservoirClassifier(torch.nn.Module):
         :param return_sequences:
         """
         super().__init__()
+        self.input_size = input_size
         self.return_sequences = return_sequences
         self.hidden = DeepReservoir(input_size=input_size, tot_units=units, n_layers=layers,
                                     concat=concat,
@@ -359,6 +360,9 @@ class DeepReservoirClassifier(torch.nn.Module):
                                             initial_out_features=initial_out_features)
 
     def forward(self, inputs):
+        if len(inputs.shape) == 4:  # CIFAR, put channels together
+            inputs = torch.transpose(inputs, 1, 3).contiguous()
+        inputs = inputs.view(inputs.size(0), -1, self.input_size)  # (B, L, I)
         if self.return_sequences:
             h, _ = self.hidden(inputs)
         else:

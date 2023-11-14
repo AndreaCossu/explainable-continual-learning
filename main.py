@@ -47,7 +47,6 @@ def main(args):
     optimizers = {}
 
     if args['dataset'] == 'cifar':
-        assert args['model'] == 'cnn'
         input_size = [3, 32, 32]
         train_transform = transforms.Compose(
             [
@@ -74,32 +73,38 @@ def main(args):
             shuffle=True,
             class_ids_from_zero_in_each_exp=False,
         )
-        models['naive'] = ReducedResNet18()
-        models['gss'] = ReducedResNet18()
-        models['replay'] = ReducedResNet18()
-        models['joint'] = ReducedResNet18(initial_out_features=10)
+
+        if args['model'] == 'cnn':
+            models['naive'] = ReducedResNet18()
+            models['gss'] = ReducedResNet18()
+            models['replay'] = ReducedResNet18()
+            models['joint'] = ReducedResNet18(initial_out_features=10)
+        else:
+            raise ValueError("Wrong model name")
 
         optimizers['naive'] = Adam(models['naive'].parameters(), lr=args['lr'])
         optimizers['gss'] = Adam(models['gss'].parameters(), lr=args['lr'])
         optimizers['replay'] = Adam(models['replay'].parameters(), lr=args['lr'])
         optimizers['joint'] = Adam(models['joint'].parameters(), lr=args['joint_lr'])
     elif args['dataset'] == 'mnist':
-        assert args['model'] == 'mlp'
-        input_size = [1, 28, 28]
         benchmark = SplitMNIST(5, return_task_id=False,
                                fixed_class_order=list(range(10)),
                                shuffle=True,
                                class_ids_from_zero_in_each_exp=False)
-        models['naive'] = IncrementalMLP(input_size=28*28, hidden_size=args['hidden_size'], hidden_layers=1)
-        models['gss'] = IncrementalMLP(input_size=28*28, hidden_size=args['hidden_size'], hidden_layers=1)
-        models['replay'] = IncrementalMLP(input_size=28*28, hidden_size=args['hidden_size'], hidden_layers=1)
-        models['joint'] = IncrementalMLP(input_size=28*28, hidden_size=args['hidden_size'], hidden_layers=1,
-                                         initial_out_features=10)
+        input_size = [1, 28, 28]
+        if args['model'] == 'mlp':
+            models['naive'] = IncrementalMLP(input_size=28*28, hidden_size=args['hidden_size'], hidden_layers=1)
+            models['gss'] = IncrementalMLP(input_size=28*28, hidden_size=args['hidden_size'], hidden_layers=1)
+            models['replay'] = IncrementalMLP(input_size=28*28, hidden_size=args['hidden_size'], hidden_layers=1)
+            models['joint'] = IncrementalMLP(input_size=28*28, hidden_size=args['hidden_size'], hidden_layers=1,
+                                             initial_out_features=10)
+            optimizers['naive'] = SGD(models['naive'].parameters(), lr=args['lr'], momentum=0.9)
+            optimizers['gss'] = SGD(models['gss'].parameters(), lr=args['lr'], momentum=0.9)
+            optimizers['replay'] = SGD(models['replay'].parameters(), lr=args['lr'], momentum=0.9)
+            optimizers['joint'] = SGD(models['joint'].parameters(), lr=args['joint_lr'], momentum=0.9)
+        else:
+            raise ValueError("Wrong model name")
 
-        optimizers['naive'] = SGD(models['naive'].parameters(), lr=args['lr'], momentum=0.9)
-        optimizers['gss'] = SGD(models['gss'].parameters(), lr=args['lr'], momentum=0.9)
-        optimizers['replay'] = SGD(models['replay'].parameters(), lr=args['lr'], momentum=0.9)
-        optimizers['joint'] = SGD(models['joint'].parameters(), lr=args['joint_lr'], momentum=0.9)
     elif args['dataset'] == 'speech':
         assert args['model'] in ['esn', 'rnn', 'ron', 'cnn']
 
@@ -107,16 +112,16 @@ def main(args):
         benchmark = create_speech_benchmark(args['speech_root'], num_words=10, test_split=0.2)
         if args['model'] == 'esn':
             models['naive'] = DeepReservoirClassifier(40, units=args['hidden_size'], layers=1, spectral_radius=args['spectral_radius'],
-                                                      input_scaling=1, feedforward_layers=1, connectivity_input=100,
+                                                      input_scaling=args['input_scaling'], feedforward_layers=1, connectivity_input=100,
                                                       connectivity_recurrent=50, leaky=0.1)
             models['gss'] = DeepReservoirClassifier(40, units=args['hidden_size'], layers=1, spectral_radius=args['spectral_radius'],
-                                                      input_scaling=1, feedforward_layers=1, connectivity_input=100,
+                                                      input_scaling=args['input_scaling'], feedforward_layers=1, connectivity_input=100,
                                                       connectivity_recurrent=50, leaky=0.1)
             models['replay'] = DeepReservoirClassifier(40, units=args['hidden_size'], layers=1, spectral_radius=args['spectral_radius'],
-                                                      input_scaling=1, feedforward_layers=1, connectivity_input=100,
+                                                      input_scaling=args['input_scaling'], feedforward_layers=1, connectivity_input=100,
                                                       connectivity_recurrent=50, leaky=0.1)
             models['joint'] = DeepReservoirClassifier(40, units=args['hidden_size'], layers=1, spectral_radius=args['spectral_radius'],
-                                                      input_scaling=1, feedforward_layers=1, connectivity_input=100,
+                                                      input_scaling=args['input_scaling'], feedforward_layers=1, connectivity_input=100,
                                                       connectivity_recurrent=50, leaky=0.1, initial_out_features=10)
         elif args['model'] == 'cnn':
             models['naive'] = CNN1D()
@@ -264,7 +269,7 @@ def main(args):
                 train_mb_size=args['train_mb_size'],
                 eval_mb_size=64
             )
-            cl_strategies['gss'].rnn = True if args['dataset'] == 'speech' else False
+            cl_strategies['gss'].rnn = True if args['model'] == 'rnn' else False
         strategy_objects[s] = {'strategy': cl_strategies[s],
                                'model': models[s]}
 

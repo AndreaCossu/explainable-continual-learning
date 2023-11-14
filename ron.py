@@ -12,6 +12,7 @@ class RON(nn.Module):
                  initial_out_features=2, return_sequences=False):
         super().__init__()
         self.n_hid = n_hid
+        self.input_size = n_inp
         self.device = device
         self.return_sequences = return_sequences
         self.dt = dt
@@ -38,6 +39,9 @@ class RON(nn.Module):
         return hy, hz
 
     def forward(self, x):
+        if len(x.shape) == 4:  # CIFAR, put channels together
+            x = torch.transpose(x, 1, 3).contiguous()
+        x = x.view(x.size(0), -1, self.input_size)  # (B, L, I)
         hy = torch.zeros(x.size(0), self.n_hid).to(self.device)
         hz = torch.zeros(x.size(0), self.n_hid).to(self.device)
         all_states = []

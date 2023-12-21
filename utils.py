@@ -366,7 +366,7 @@ def get_background_and_test(dataset, num_background=700, num_inputs_per_class=3,
     return background_inputs, test_inputs, test_targets
 
 
-def plot_explanations_grid(expl_values, test_inputs, save_path, name='test', num_plots=6):
+def plot_explanations_grid(expl_values, test_inputs, save_path, name='test', num_plots=4):
     per_class_els = int(num_plots / 2)
     test_inputs = torch.cat((test_inputs[:per_class_els], test_inputs[-per_class_els:]))
     expl_values = [torch.cat((s[:per_class_els], s[-per_class_els:])) for s in expl_values]
@@ -382,19 +382,22 @@ def plot_explanations_grid(expl_values, test_inputs, save_path, name='test', num
         test_numpy = test_inputs.detach().numpy().mean(axis=-1)
         fig, ax = plt.subplots(test_numpy.shape[0], len(expl_numpy) + 1, figsize=(20, 5))
         for i in range(test_numpy.shape[0]):
-            ax[i, 0].plot(test_numpy[i], 'g-')
-            ax[i, 0].set_ylim(-1, 3)
-        default_cmap = plt.get_cmap('Greys')
+            ax[i, 0].plot(test_numpy[i], 'k-',)
+            ax[i, 0].set_ylim(-0.5, 4)
+            ax[i, 0].set_xticks([])
+        default_cmap = plt.get_cmap('Reds')
         for i in range(test_numpy.shape[0]):
             for j in range(len(expl_numpy)):
                 expl_numpy_norm = (expl_numpy[j][i] - expl_numpy[j][i].min()) / (expl_numpy[j][i].max() - expl_numpy[j][i].min())
                 ax[i, j+1].plot(np.arange(test_numpy.shape[1]), test_numpy[i], c='white')
                 for k in range(test_numpy[i].shape[0]):
                     ax[i, j+1].plot([k], test_numpy[i][k],
-                                    linewidth=0., marker='o',
+                                    linewidth=1., linestyle='-', marker='o',
                                     c=default_cmap(expl_numpy_norm[k]),
                                     markersize=0.5)
-                ax[i, j+1].set_ylim(-1, 3)
+                ax[i, j+1].set_ylim(-0.5, 4)
+                ax[i, j+1].set_yticks([])
+                ax[i, j+1].set_xticks([])
         plt.savefig(os.path.join(save_path, f'{name}_timeseries.png'))
     else:
         # plot average over channels
